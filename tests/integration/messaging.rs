@@ -164,6 +164,41 @@ pub(crate) async fn setup_devnet(
     Ok((devnet, account, contract_address))
 }
 
+/// Gives `user` a balance of `amount` in the L1L2 example contract on L1, which is required before
+/// the user can `deposit` back to L2. The funds travel the same way a real user's would: the
+/// user's L2 balance is increased and withdrawn to L1 with an L2->L1 message, which is then
+/// flushed and consumed on L1. Assumes the L1 messaging contract is loaded. The user's L2 balance
+/// is zero afterwards.
+async fn fund_user_on_l1(
+    devnet: &BackgroundDevnet,
+    anvil: &BackgroundAnvil,
+    l2_account: Arc<SingleOwnerAccount<JsonRpcClient<HttpTransport>, LocalWallet>>,
+    l2_contract: Felt,
+    l1_contract: Address,
+    user: Felt,
+    amount: Felt,
+) -> Result<(), anyhow::Error> {
+    increase_balance(l2_account.clone(), l2_contract, user, amount).await?;
+
+    let l1_contract_felt = Felt::from_hex_unchecked(&format!("{l1_contract:#x}"));
+    withdraw(l2_account, l2_contract, user, amount, l1_contract_felt)
+        .await
+        .map_err(|err| anyhow::anyhow!("withdraw error {err:?}"))?;
+
+    devnet.send_custom_rpc("devnet_postmanFlush", json!({})).await?;
+
+    anvil
+        .withdraw_l1l2(
+            l1_contract,
+            felt_to_u256(l2_contract),
+            felt_to_u256(user),
+            felt_to_u256(amount),
+        )
+        .await?;
+
+    Ok(())
+}
+
 fn assert_accepted_l1_handler_trace(trace: &TransactionTrace) -> Result<(), anyhow::Error> {
     match trace {
         TransactionTrace::L1Handler(L1HandlerTransactionTrace {
@@ -631,18 +666,9 @@ async fn snapshot_restores_l1_message_cursor_without_reverting_anvil() {
     let messaging_address = Address::from_hex(MESSAGING_L1_ADDRESS).unwrap();
     let l1_contract = anvil.deploy_l1l2_contract(messaging_address).await.unwrap();
     let user = U256::ONE;
-    increase_balance(account.clone(), l2_contract, Felt::ONE, Felt::ONE).await.unwrap();
-    withdraw(
-        account,
-        l2_contract,
-        Felt::ONE,
-        Felt::ONE,
-        Felt::from_hex_unchecked(&format!("{l1_contract:#x}")),
-    )
-    .await
-    .unwrap();
-    devnet.send_custom_rpc("devnet_postmanFlush", json!({})).await.unwrap();
-    anvil.withdraw_l1l2(l1_contract, felt_to_u256(l2_contract), user, U256::ONE).await.unwrap();
+    fund_user_on_l1(&devnet, &anvil, account, l2_contract, l1_contract, Felt::ONE, Felt::ONE)
+        .await
+        .unwrap();
 
     let snapshot = devnet.send_custom_rpc("devnet_snapshot", json!([])).await.unwrap();
     anvil.deposit_l1l2(l1_contract, felt_to_u256(l2_contract), user, U256::ONE).await.unwrap();
@@ -748,33 +774,24 @@ async fn test_correct_message_order() {
     // Deploy the L1L2 testing contract on L1 (on L2 it's already pre-deployed).
     let l1_messaging_address = Address::from_hex(MESSAGING_L1_ADDRESS).unwrap();
     let eth_l1l2_address = anvil.deploy_l1l2_contract(l1_messaging_address).await.unwrap();
-    let eth_l1l2_address_hex = format!("{eth_l1l2_address:#x}");
-
-    let eth_l1l2_address_felt = Felt::from_hex_unchecked(&eth_l1l2_address_hex);
     let user_sn = Felt::ONE;
     let user_eth: U256 = U256::ONE;
 
-    // Set balance for the user on L2.
+    // Give the user funds on L1, so that they can be deposited back to L2.
     let init_balance = 5_u64;
-    increase_balance(sn_account.clone(), sn_l1l2_contract, user_sn, init_balance.into())
-        .await
-        .unwrap();
-
-    // Withdraw the set amount from user 1 balance on L2 to send it on L1 with a l2->l1 message.
-    withdraw(sn_account, sn_l1l2_contract, user_sn, init_balance.into(), eth_l1l2_address_felt)
-        .await
-        .unwrap();
-
-    // Flush to send the messages.
-    devnet.send_custom_rpc("devnet_postmanFlush", json!({})).await.expect("flush failed");
+    fund_user_on_l1(
+        &devnet,
+        &anvil,
+        sn_account,
+        sn_l1l2_contract,
+        eth_l1l2_address,
+        user_sn,
+        init_balance.into(),
+    )
+    .await
+    .unwrap();
 
     let sn_l1l2_contract_u256 = felt_to_u256(sn_l1l2_contract);
-
-    // Consume the message to increase the L1 balance.
-    anvil
-        .withdraw_l1l2(eth_l1l2_address, sn_l1l2_contract_u256, user_eth, U256::from(init_balance))
-        .await
-        .unwrap();
 
     // Send back an amount of 1 to the user on L2. Do it n times to have n transactions,
     // for the purpose of message order testing (n = init_balance)
@@ -845,43 +862,25 @@ async fn flushing_only_new_messages_after_restart() {
     // Deploy the L1L2 testing contract on L1 (on L2 it's already pre-deployed).
     let l1_messaging_address = Address::from_hex(MESSAGING_L1_ADDRESS).unwrap();
     let eth_l1l2_address = anvil.deploy_l1l2_contract(l1_messaging_address).await.unwrap();
-    let eth_l1l2_address_hex = format!("{eth_l1l2_address:#x}");
-
-    let eth_l1l2_address_felt = Felt::from_hex_unchecked(&eth_l1l2_address_hex);
     let user_sn = Felt::ONE;
     let user_eth: U256 = U256::ONE;
 
-    // Set balance to for the user 1 on L2.
+    // Give the user funds on L1, so that they can be deposited back to L2.
     let user_balance = Felt::TWO;
-    increase_balance(sn_account.clone(), sn_l1l2_contract, user_sn, user_balance).await.unwrap();
-    assert_eq!(get_balance(&devnet, sn_l1l2_contract, user_sn).await.unwrap(), [user_balance]);
-
-    // Withdraw on L2 to send it to L1 with a l2->l1 message.
-    withdraw(sn_account.clone(), sn_l1l2_contract, user_sn, user_balance, eth_l1l2_address_felt)
-        .await
-        .unwrap();
+    fund_user_on_l1(
+        &devnet,
+        &anvil,
+        sn_account.clone(),
+        sn_l1l2_contract,
+        eth_l1l2_address,
+        user_sn,
+        user_balance,
+    )
+    .await
+    .unwrap();
     assert_eq!(get_balance(&devnet, sn_l1l2_contract, user_sn).await.unwrap(), [Felt::ZERO]);
 
-    // Flush to send the messages.
-    devnet.send_custom_rpc("devnet_postmanFlush", json!({})).await.unwrap();
-
-    // Check that the balance is 0 on L1 before consuming the message.
-    let user_balance_eth = anvil.get_balance_l1l2(eth_l1l2_address, user_eth).await.unwrap();
-    assert_eq!(user_balance_eth, U256::ZERO);
-
     let sn_l1l2_contract_u256 = felt_to_u256(sn_l1l2_contract);
-
-    // Consume the message to increase the balance.
-    anvil
-        .withdraw_l1l2(
-            eth_l1l2_address,
-            sn_l1l2_contract_u256,
-            user_eth,
-            felt_to_u256(user_balance),
-        )
-        .await
-        .unwrap();
-
     let user_balance_eth = anvil.get_balance_l1l2(eth_l1l2_address, user_eth).await.unwrap();
     assert_eq!(user_balance_eth, felt_to_u256(user_balance));
 
@@ -993,28 +992,22 @@ async fn test_getting_status_of_real_message() {
     let l1_messaging_address = Address::from_hex(MESSAGING_L1_ADDRESS).unwrap();
     let eth_l1l2_address = anvil.deploy_l1l2_contract(l1_messaging_address).await.unwrap();
 
-    let eth_l1l2_address_hex = format!("{eth_l1l2_address:#x}");
-    let eth_l1l2_address_felt = Felt::from_hex_unchecked(&eth_l1l2_address_hex);
-
-    // Set balance to 1 for the user 1 on L2 and withdraw to L1.
+    // Give the user 1 a balance of 1 on L1, so that it can be deposited back to L2.
     let user_sn = Felt::ONE;
-    let user_balance = Felt::ONE;
-    increase_balance(sn_account.clone(), sn_l1l2_contract, user_sn, user_balance).await.unwrap();
-    withdraw(sn_account, sn_l1l2_contract, user_sn, user_balance, eth_l1l2_address_felt)
-        .await
-        .unwrap();
-
-    // Flush to send the messages.
-    devnet.send_custom_rpc("devnet_postmanFlush", json!({})).await.unwrap();
+    fund_user_on_l1(
+        &devnet,
+        &anvil,
+        sn_account,
+        sn_l1l2_contract,
+        eth_l1l2_address,
+        user_sn,
+        Felt::ONE,
+    )
+    .await
+    .unwrap();
 
     let user_eth = U256::ONE;
     let sn_l1l2_contract_u256 = felt_to_u256(sn_l1l2_contract);
-
-    // Consume the message to increase the balance on L1
-    anvil
-        .withdraw_l1l2(eth_l1l2_address, sn_l1l2_contract_u256, user_eth, U256::ONE)
-        .await
-        .unwrap();
 
     // Send back the amount 1 to the user 1 on L2.
     anvil.deposit_l1l2(eth_l1l2_address, sn_l1l2_contract_u256, user_eth, U256::ONE).await.unwrap();
