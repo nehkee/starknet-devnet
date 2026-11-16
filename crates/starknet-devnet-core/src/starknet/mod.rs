@@ -467,11 +467,6 @@ impl Starknet {
         };
 
         let new_block_number = self.blocks.next_latest_block_number();
-        new_block.set_block_hash(if self.config.lite_mode {
-            BlockHash::from(new_block_number.0)
-        } else {
-            new_block.generate_hash()
-        });
         new_block.status = BlockStatus::AcceptedOnL2;
         new_block.set_block_number(new_block_number.0);
 
@@ -479,19 +474,6 @@ impl Starknet {
         let block_timestamp = self.next_block_timestamp();
         new_block.set_timestamp(block_timestamp);
         Self::update_block_context_block_timestamp(&mut self.block_context, block_timestamp);
-
-        let new_block_hash = new_block.header.block_hash.0;
-
-        // update block hash for each pre_confirmed tx; block number should already be set
-        new_block.get_transactions().iter().for_each(|tx_hash| {
-            if let Some(tx) = self.transactions.get_by_hash_mut(tx_hash) {
-                debug_assert_eq!(tx.block_number, Some(new_block_number));
-                tx.block_hash = Some(new_block_hash);
-                tx.finality_status = TransactionFinalityStatus::AcceptedOnL2;
-            } else {
-                error!("Transaction is not present in the transactions collection");
-            }
-        });
 
         let transaction_data: Vec<
             starknet_api::block_hash::block_hash_calculator::TransactionHashingData,
@@ -533,6 +515,25 @@ impl Starknet {
             transaction_data.iter().map(|tx| tx.transaction_output.events.len()).sum(),
             state_diff_len,
         );
+
+        // The hash covers the header, so compute it only once the header is complete.
+        new_block.set_block_hash(if self.config.lite_mode {
+            BlockHash::from(new_block_number.0)
+        } else {
+            new_block.generate_hash()
+        });
+        let new_block_hash = new_block.header.block_hash.0;
+
+        // update block hash for each pre_confirmed tx; block number should already be set
+        new_block.get_transactions().iter().for_each(|tx_hash| {
+            if let Some(tx) = self.transactions.get_by_hash_mut(tx_hash) {
+                debug_assert_eq!(tx.block_number, Some(new_block_number));
+                tx.block_hash = Some(new_block_hash);
+                tx.finality_status = TransactionFinalityStatus::AcceptedOnL2;
+            } else {
+                error!("Transaction is not present in the transactions collection");
+            }
+        });
 
         // insert pre_confirmed block in the blocks collection and connect it to the state diff
         self.blocks.insert(new_block, self.pre_confirmed_state_diff.clone());

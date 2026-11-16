@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use indexmap::IndexMap;
 use starknet_api::block::{BlockHeader, BlockHeaderWithoutHash, BlockNumber, BlockTimestamp};
-use starknet_api::block_hash::block_hash_calculator::BlockHeaderCommitments;
+use starknet_api::block_hash::block_hash_calculator::{
+    BlockHeaderCommitments, PartialBlockHashComponents, calculate_block_hash, concat_counts,
+};
 use starknet_api::data_availability::L1DataAvailabilityMode;
 use starknet_api::felt;
 use starknet_rs_core::types::Felt;
@@ -452,32 +454,51 @@ impl StarknetBlock {
 }
 
 impl HashProducer for StarknetBlock {
+    /// Computes the block hash with Starknet's block hash formula. Fields Devnet does not compute,
+    /// such as the state root, contribute as zero. The header must be complete: block number,
+    /// timestamp, parent hash, counts and commitments set.
     fn generate_hash(&self) -> BlockHash {
-        Poseidon::hash_array(&[
-            felt!(self.header.block_header_without_hash.block_number.0), // block number
-            self.header.block_header_without_hash.state_root.0,          // global_state_root
-            *self.header.block_header_without_hash.sequencer.0.key(),    // sequencer_address
-            Felt::ZERO,                                                  /* block_timestamp;
-                                                                          * would normally be
-                                                                          * felt!(self.header.
-                                                                          * timestamp.0), but
-                                                                          * is modified to enable replicability
-                                                                          * in re-execution on
-                                                                          * loading on dump */
-            felt!(self.transaction_hashes.len() as u64), // transaction_count
-            Felt::ZERO,                                  // transaction_commitment
-            Felt::ZERO,                                  // event_count
-            Felt::ZERO,                                  // event_commitment
-            Felt::ZERO,                                  // protocol_version
-            Felt::ZERO,                                  // extra_data
-            self.header.block_header_without_hash.parent_hash.0, // parent_block_hash
-        ])
+        let header = &self.header;
+        let header_without_hash = &header.block_header_without_hash;
+        let header_commitments = BlockHeaderCommitments {
+            transaction_commitment: header.transaction_commitment.unwrap_or_default(),
+            event_commitment: header.event_commitment.unwrap_or_default(),
+            receipt_commitment: header.receipt_commitment.unwrap_or_default(),
+            state_diff_commitment: header.state_diff_commitment.unwrap_or_default(),
+            concatenated_counts: concat_counts(
+                header.n_transactions,
+                header.n_events,
+                header.state_diff_length.unwrap_or_default(),
+                header_without_hash.l1_da_mode,
+            ),
+        };
+        let components = PartialBlockHashComponents {
+            header_commitments,
+            block_number: header_without_hash.block_number,
+            l1_gas_price: header_without_hash.l1_gas_price,
+            l1_data_gas_price: header_without_hash.l1_data_gas_price,
+            l2_gas_price: header_without_hash.l2_gas_price,
+            sequencer: header_without_hash.sequencer,
+            timestamp: header_without_hash.timestamp,
+            starknet_version: header_without_hash.starknet_version,
+        };
+
+        calculate_block_hash(
+            &components,
+            header_without_hash.state_root,
+            header_without_hash.parent_hash,
+        )
+        .expect("the Starknet version of Devnet blocks supports block hash calculation")
+        .0
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use starknet_api::block::{BlockHash, BlockHeader, BlockHeaderWithoutHash, BlockNumber};
+    use starknet_api::block::{
+        BlockHash, BlockHeader, BlockHeaderWithoutHash, BlockNumber, BlockTimestamp,
+    };
+    use starknet_api::core::{EventCommitment, TransactionCommitment};
     use starknet_api::data_availability::L1DataAvailabilityMode;
     use starknet_rs_core::types::Felt;
     use starknet_types::rpc::block::{BlockId, BlockStatus, BlockTag};
@@ -930,5 +951,46 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    /// A block of the given number with one transaction, as Devnet builds it before hashing.
+    fn block_with_one_transaction(block_number: u64) -> StarknetBlock {
+        let mut block = StarknetBlock::create_pre_confirmed_block();
+        block.set_block_number(block_number);
+        block.set_timestamp(BlockTimestamp(1_000));
+        block.set_counts(1, 0, 0);
+        block
+    }
+
+    #[test]
+    fn block_hash_is_deterministic() {
+        assert_eq!(
+            block_with_one_transaction(1).generate_hash(),
+            block_with_one_transaction(1).generate_hash()
+        );
+    }
+
+    #[test]
+    fn block_hash_depends_on_timestamp() {
+        let block = block_with_one_transaction(1);
+        let mut later_block = block_with_one_transaction(1);
+        later_block.set_timestamp(BlockTimestamp(1_001));
+
+        assert_ne!(block.generate_hash(), later_block.generate_hash());
+    }
+
+    #[test]
+    fn block_hash_depends_on_transactions_and_events() {
+        let block = block_with_one_transaction(1);
+
+        let mut other_transaction = block_with_one_transaction(1);
+        other_transaction.header.transaction_commitment =
+            Some(TransactionCommitment(Felt::from(1_u8)));
+        assert_ne!(block.generate_hash(), other_transaction.generate_hash());
+
+        let mut with_event = block_with_one_transaction(1);
+        with_event.set_counts(1, 1, 0);
+        with_event.header.event_commitment = Some(EventCommitment(Felt::from(1_u8)));
+        assert_ne!(block.generate_hash(), with_event.generate_hash());
     }
 }
