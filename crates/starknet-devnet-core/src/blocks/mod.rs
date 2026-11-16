@@ -6,13 +6,11 @@ use starknet_api::block_hash::block_hash_calculator::{
     BlockHeaderCommitments, PartialBlockHashComponents, calculate_block_hash, concat_counts,
 };
 use starknet_api::data_availability::L1DataAvailabilityMode;
-use starknet_api::felt;
 use starknet_rs_core::types::Felt;
 use starknet_types::contract_address::ContractAddress;
 use starknet_types::felt::{BlockHash, TransactionHash};
 use starknet_types::rpc::block::{BlockId, BlockStatus, BlockTag, ResourcePrice};
 use starknet_types::traits::HashProducer;
-use starknet_types_core::hash::{Poseidon, StarkHash};
 
 use crate::constants::{DEVNET_DEFAULT_STARTING_BLOCK_NUMBER, STARKNET_VERSION};
 use crate::error::{DevnetResult, Error};
@@ -457,6 +455,8 @@ impl HashProducer for StarknetBlock {
     /// Computes the block hash with Starknet's block hash formula. Fields Devnet does not compute,
     /// such as the state root, contribute as zero. The header must be complete: block number,
     /// timestamp, parent hash, counts and commitments set.
+    // Devnet blocks use a Starknet version supported by the block hash calculation.
+    #[allow(clippy::expect_used)]
     fn generate_hash(&self) -> BlockHash {
         let header = &self.header;
         let header_without_hash = &header.block_header_without_hash;
