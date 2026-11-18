@@ -516,7 +516,12 @@ impl Starknet {
             state_diff_len,
         );
 
-        // The hash covers the header, so compute it only once the header is complete.
+        // The hash covers the header, so compute it only once the header is complete, including
+        // the parent hash, which inserting the block would otherwise set only after hashing.
+        if let Some(last_block_hash) = self.blocks.last_block_hash {
+            new_block.header.block_header_without_hash.parent_hash =
+                starknet_api::block::BlockHash(last_block_hash);
+        }
         new_block.set_block_hash(if self.config.lite_mode {
             BlockHash::from(new_block_number.0)
         } else {
@@ -1828,7 +1833,7 @@ mod tests {
     };
     use starknet_types::rpc::state::Balance;
     use starknet_types::rpc::transaction_receipt::TransactionReceipt;
-    use starknet_types::traits::TryHashProducer;
+    use starknet_types::traits::{HashProducer, TryHashProducer};
 
     use super::Starknet;
     use super::starknet_config::BlockGenerationOn;
@@ -2339,6 +2344,21 @@ mod tests {
             }
             unexpected => panic!("Got unexpected response: {unexpected:?}"),
         }
+    }
+
+    #[test]
+    fn block_hash_matches_the_stored_header_and_links_to_the_parent() {
+        let mut starknet = Starknet::new(&StarknetConfig::default()).unwrap();
+        starknet.create_block();
+        let first_hash = starknet.blocks.last_block_hash.unwrap();
+        starknet.create_block();
+        let second_hash = starknet.blocks.last_block_hash.unwrap();
+
+        let first_block = &starknet.blocks.hash_to_block[&first_hash];
+        let second_block = &starknet.blocks.hash_to_block[&second_hash];
+        assert_eq!(first_block.generate_hash(), first_hash);
+        assert_eq!(second_block.generate_hash(), second_hash);
+        assert_eq!(second_block.parent_hash(), first_hash);
     }
 
     #[test]

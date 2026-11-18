@@ -139,7 +139,7 @@ A dump loads only into a Devnet that produces the same genesis (predeployed acco
 
 ### Legacy dumps
 
-Earlier Devnet versions dumped a list of replayable requests. During a transition period, these legacy dumps can still be loaded, on startup or with `devnet_load` by passing the list as `dump`. Loading a legacy dump re-executes its requests, so block timestamps differ from the original run, and requires the same options, such as `--account-class` and `--block-generation-on`, as when it was dumped. Legacy dumps that contain `devnet_dump` or `devnet_load` requests are rejected. Devnet no longer produces legacy dumps.
+Earlier Devnet versions dumped a list of replayable requests. During a transition period, these legacy dumps can still be loaded, on startup or with `devnet_load` by passing the list as `dump`. Loading a legacy dump re-executes its requests, so block timestamps and hashes differ from the original run, and requires the same options, such as `--account-class` and `--block-generation-on`, as when it was dumped. Legacy dumps that contain `devnet_dump` or `devnet_load` requests are rejected. Devnet no longer produces legacy dumps.
 
 To convert a legacy dump, specify the options it was dumped with:
 

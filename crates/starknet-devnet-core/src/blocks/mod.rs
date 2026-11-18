@@ -407,6 +407,7 @@ impl StarknetBlock {
             header: BlockHeader {
                 block_header_without_hash: BlockHeaderWithoutHash {
                     l1_da_mode: L1DataAvailabilityMode::Blob,
+                    starknet_version: STARKNET_VERSION,
                     ..Default::default()
                 },
                 ..BlockHeader::default()
@@ -980,17 +981,39 @@ mod tests {
     }
 
     #[test]
-    fn block_hash_depends_on_transactions_and_events() {
+    fn block_hash_depends_on_parent_hash() {
         let block = block_with_one_transaction(1);
+        let mut other_parent = block_with_one_transaction(1);
+        other_parent.header.block_header_without_hash.parent_hash = BlockHash(Felt::ONE);
 
+        assert_ne!(block.generate_hash(), other_parent.generate_hash());
+    }
+
+    #[test]
+    fn block_hash_depends_on_transaction_commitment() {
+        let block = block_with_one_transaction(1);
         let mut other_transaction = block_with_one_transaction(1);
         other_transaction.header.transaction_commitment =
             Some(TransactionCommitment(Felt::from(1_u8)));
-        assert_ne!(block.generate_hash(), other_transaction.generate_hash());
 
+        assert_ne!(block.generate_hash(), other_transaction.generate_hash());
+    }
+
+    #[test]
+    fn block_hash_depends_on_event_commitment() {
+        let block = block_with_one_transaction(1);
+        let mut other_events = block_with_one_transaction(1);
+        other_events.header.event_commitment = Some(EventCommitment(Felt::from(1_u8)));
+
+        assert_ne!(block.generate_hash(), other_events.generate_hash());
+    }
+
+    #[test]
+    fn block_hash_depends_on_event_count() {
+        let block = block_with_one_transaction(1);
         let mut with_event = block_with_one_transaction(1);
         with_event.set_counts(1, 1, 0);
-        with_event.header.event_commitment = Some(EventCommitment(Felt::from(1_u8)));
+
         assert_ne!(block.generate_hash(), with_event.generate_hash());
     }
 }
