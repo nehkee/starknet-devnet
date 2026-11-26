@@ -506,6 +506,7 @@ mod tests {
     use starknet_types::traits::HashProducer;
 
     use super::{StarknetBlock, StarknetBlocks};
+    use crate::constants::STARKNET_VERSION;
     use crate::state::state_diff::StateDiff;
     use crate::traits::HashIdentified;
 
@@ -947,6 +948,7 @@ mod tests {
             BlockHeader {
                 block_header_without_hash: BlockHeaderWithoutHash {
                     l1_da_mode: L1DataAvailabilityMode::Blob,
+                    starknet_version: STARKNET_VERSION,
                     ..Default::default()
                 },
                 ..Default::default()
